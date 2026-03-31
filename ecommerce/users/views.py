@@ -1,22 +1,25 @@
 """
 Views for User module.
-Handles all HTTP requests related to user management, authentication, and profiles.
 """
 
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.db.models import Q
+from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
 from .models import User, Address, Wishlist, UserProfile
 from .serializers import (
     UserRegistrationSerializer, UserLoginSerializer,
     UserProfileSerializer, AddressSerializer,
-    WishlistSerializer, ChangePasswordSerializer
+    WishlistSerializer, ChangePasswordSerializer,
+    UserListSerializer, AdminUserUpdateSerializer
 )
-from products.models import Product
-from notifications.utils import create_notification
+from .permissions import (
+    IsAdminUser, IsAdminOrModerator, IsOwnerOrAdmin, IsAdminOrSeller
+)
 
 User = get_user_model()
 
@@ -24,7 +27,7 @@ User = get_user_model()
 class RegistrationView(generics.CreateAPIView):
     """
     API endpoint for user registration.
-    Allows new users to create an account.
+    POST /api/auth/register/
     """
     
     queryset = User.objects.all()
@@ -32,53 +35,39 @@ class RegistrationView(generics.CreateAPIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request, *args, **kwargs):
-        """
-        Register a new user.
-        
-        Returns:
-            Response: Success message with user data
-        """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         
-        # Create welcome notification (commented for now)
-        """
-        create_notification(
-            user=user,
-            notification_type='welcome',
-            title='Welcome to Our Store!',
-            message=f'Welcome {user.first_name}! Thank you for joining us.'
-        )
-        """
-        
         return Response({
             'success': True,
             'message': 'User registered successfully',
-            'data': UserProfileSerializer(user.profile).data
+            'data': {
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name
+            }
         }, status=status.HTTP_201_CREATED)
 
 
 class LoginView(APIView):
     """
     API endpoint for user login.
-    Authenticates user and returns JWT tokens.
+    POST /api/auth/login/
     """
     
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
-        """
-        Authenticate user and return tokens.
-        
-        Returns:
-            Response: JWT tokens and user data
-        """
         serializer = UserLoginSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         
         data = serializer.validated_data
         user = data['user']
+        
+        # Update last login
+        user.last_login = timezone.now()
+        user.save(update_fields=['last_login'])
         
         return Response({
             'success': True,
@@ -86,7 +75,14 @@ class LoginView(APIView):
             'data': {
                 'access_token': data['access'],
                 'refresh_token': data['refresh'],
-                'user': UserProfileSerializer(user.profile).data
+                'user': {
+                    'id': str(user.id),
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'user_type': user.user_type,
+                    'is_active': user.is_active
+                }
             }
         }, status=status.HTTP_200_OK)
 
@@ -94,20 +90,15 @@ class LoginView(APIView):
 class LogoutView(APIView):
     """
     API endpoint for user logout.
-    Blacklists the refresh token.
+    POST /api/auth/logout/
     """
     
+    permission_classes = [permissions.IsAuthenticated]
+    
     def post(self, request):
-        """
-        Logout user by blacklisting refresh token.
-        
-        Returns:
-            Response: Success message
-        """
         try:
             refresh_token = request.data.get('refresh_token')
             if refresh_token:
-                from rest_framework_simplejwt.tokens import RefreshToken
                 token = RefreshToken(refresh_token)
                 token.blacklist()
             
@@ -125,121 +116,98 @@ class LogoutView(APIView):
 class ProfileView(generics.RetrieveUpdateAPIView):
     """
     API endpoint for viewing and updating user profile.
+    GET /api/auth/profile/
+    PUT /api/auth/profile/
     """
     
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def get_object(self):
-        """
-        Get the profile of the currently authenticated user.
-        
-        Returns:
-            UserProfile: User's profile instance
-        """
         profile, created = UserProfile.objects.get_or_create(user=self.request.user)
         return profile
+
+
+class ChangePasswordView(APIView):
+    """
+    API endpoint for changing user password.
+    POST /api/auth/change-password/
+    """
     
-    def put(self, request, *args, **kwargs):
-        """
-        Update user profile.
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
         
-        Returns:
-            Response: Updated profile data
-        """
-        return super().put(request, *args, **kwargs)
+        user = request.user
+        user.set_password(serializer.validated_data['new_password'])
+        user.save()
+        
+        return Response({
+            'success': True,
+            'message': 'Password changed successfully'
+        }, status=status.HTTP_200_OK)
 
 
 class AddressListCreateView(generics.ListCreateAPIView):
     """
     API endpoint for listing and creating addresses.
+    GET /api/auth/addresses/
+    POST /api/auth/addresses/
     """
     
     serializer_class = AddressSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        """
-        Get addresses for the current user.
-        
-        Returns:
-            QuerySet: User's addresses
-        """
         return Address.objects.filter(user=self.request.user)
     
     def perform_create(self, serializer):
-        """
-        Create a new address for the current user.
-        
-        Args:
-            serializer: Address serializer instance
-        """
         serializer.save(user=self.request.user)
 
 
 class AddressDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     API endpoint for retrieving, updating, and deleting a specific address.
+    GET /api/auth/addresses/{id}/
+    PUT /api/auth/addresses/{id}/
+    DELETE /api/auth/addresses/{id}/
     """
     
     serializer_class = AddressSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOrAdmin]
     
     def get_queryset(self):
-        """
-        Get addresses for the current user.
-        
-        Returns:
-            QuerySet: User's addresses
-        """
         return Address.objects.filter(user=self.request.user)
 
 
 class WishlistView(generics.ListCreateAPIView):
     """
     API endpoint for managing user's wishlist.
+    GET /api/auth/wishlist/
+    POST /api/auth/wishlist/
     """
     
     serializer_class = WishlistSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        """
-        Get wishlist items for the current user.
-        
-        Returns:
-            QuerySet: User's wishlist items
-        """
         return Wishlist.objects.filter(user=self.request.user)
     
     def perform_create(self, serializer):
-        """
-        Add a product to wishlist.
-        
-        Args:
-            serializer: Wishlist serializer instance
-        """
         serializer.save(user=self.request.user)
 
 
 class WishlistDeleteView(APIView):
     """
     API endpoint for removing items from wishlist.
+    DELETE /api/auth/wishlist/{product_id}/
     """
     
     permission_classes = [permissions.IsAuthenticated]
     
     def delete(self, request, product_id):
-        """
-        Remove a product from wishlist.
-        
-        Args:
-            request: HTTP request
-            product_id: ID of product to remove
-            
-        Returns:
-            Response: Success message
-        """
         try:
             wishlist_item = Wishlist.objects.get(
                 user=request.user,
@@ -257,195 +225,135 @@ class WishlistDeleteView(APIView):
             }, status=status.HTTP_404_NOT_FOUND)
 
 
-class ChangePasswordView(APIView):
+class AdminUserListView(generics.ListAPIView):
     """
-    API endpoint for changing user password.
-    """
-    
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def post(self, request):
-        """
-        Change user password.
-        
-        Args:
-            request: HTTP request with old and new password
-            
-        Returns:
-            Response: Success message
-        """
-        serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
-        serializer.is_valid(raise_exception=True)
-        
-        # Change password
-        user = request.user
-        user.set_password(serializer.validated_data['new_password'])
-        user.save()
-        
-        return Response({
-            'success': True,
-            'message': 'Password changed successfully'
-        }, status=status.HTTP_200_OK)
-
-
-class UserSearchView(generics.ListAPIView):
-    """
-    API endpoint for searching users (admin only).
+    Admin endpoint to list all users with filters.
+    GET /api/auth/admin/users/
+    Query params: search, role, status, page
     """
     
-    serializer_class = UserProfileSerializer
-    permission_classes = [permissions.IsAdminUser]
+    serializer_class = UserListSerializer
+    permission_classes = [IsAdminUser]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['email', 'first_name', 'last_name', 'phone']
+    ordering_fields = ['date_joined', 'last_login', 'email']
+    ordering = ['-date_joined']
     
     def get_queryset(self):
-        """
-        Search users by email, first name, or last name.
-        
-        Returns:
-            QuerySet: Filtered users
-        """
         queryset = User.objects.all()
-        search = self.request.query_params.get('search', '')
         
-        if search:
-            queryset = queryset.filter(
-                Q(email__icontains=search) |
-                Q(first_name__icontains=search) |
-                Q(last_name__icontains=search)
-            )
+        # Role filter
+        role = self.request.query_params.get('role')
+        if role and role != 'all':
+            queryset = queryset.filter(user_type=role)
+        
+        # Status filter
+        status_param = self.request.query_params.get('status')
+        if status_param and status_param != 'all':
+            is_active = status_param == 'active'
+            queryset = queryset.filter(is_active=is_active)
         
         return queryset
 
 
-# Email verification views (commented for future use)
-"""
-class VerifyEmailView(APIView):
-    permission_classes = [permissions.AllowAny]
+class AdminUserDetailView(generics.RetrieveUpdateAPIView):
+    """
+    Admin endpoint to view and update user details.
+    GET /api/auth/admin/users/{user_id}/
+    PUT /api/auth/admin/users/{user_id}/
+    """
     
-    def post(self, request):
-        serializer = EmailVerificationSerializer(data=request.data)
+    serializer_class = AdminUserUpdateSerializer
+    permission_classes = [IsAdminUser]
+    lookup_field = 'id'  # ✅ Fixed: Use 'id' instead of 'user_id'
+    lookup_url_kwarg = 'user_id'  # ✅ This maps URL parameter 'user_id' to lookup_field 'id'
+    
+    def get_queryset(self):
+        return User.objects.all()
+    
+    def retrieve(self, request, *args, **kwargs):
+        user = self.get_object()
+        serializer = UserListSerializer(user)
+        return Response(serializer.data)
+    
+    def update(self, request, *args, **kwargs):
+        user = self.get_object()
+        serializer = self.get_serializer(user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        
-        token = serializer.validated_data['token']
-        user = User.objects.get(email_verification_token=token)
-        
-        user.is_email_verified = True
-        user.email_verification_token = None
-        user.save()
+        serializer.save()
         
         return Response({
             'success': True,
-            'message': 'Email verified successfully'
+            'message': 'User updated successfully',
+            'data': UserListSerializer(user).data
         })
-"""
 
 
-class UserTypeUpdateView(APIView):
+class AdminUserToggleStatusView(APIView):
     """
-    API endpoint for updating user type (admin only).
+    Admin endpoint to enable/disable user account.
+    POST /api/auth/admin/users/{user_id}/toggle-status/
     """
     
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminUser]
     
     def post(self, request, user_id):
-        """
-        Update user's role/type.
-        
-        Args:
-            request: HTTP request with new user_type
-            user_id: ID of user to update
-            
-        Returns:
-            Response: Updated user data
-        """
         try:
-            user = User.objects.get(id=user_id)
-            user_type = request.data.get('user_type')
+            user = User.objects.get(id=user_id)  # ✅ Fixed: Use 'id' field
             
-            if user_type in dict(User.USER_TYPE_CHOICES).keys():
-                user.user_type = user_type
-                user.save()
-                
-                return Response({
-                    'success': True,
-                    'message': 'User type updated successfully',
-                    'data': UserProfileSerializer(user.profile).data
-                })
-            else:
+            # Prevent disabling your own account
+            if user.id == request.user.id:
                 return Response({
                     'success': False,
-                    'message': 'Invalid user type'
+                    'message': 'You cannot disable your own account'
                 }, status=status.HTTP_400_BAD_REQUEST)
-                
+            
+            user.is_active = not user.is_active
+            user.save()
+            
+            return Response({
+                'success': True,
+                'message': f"User account {'enabled' if user.is_active else 'disabled'} successfully",
+                'data': {
+                    'id': str(user.id),
+                    'email': user.email,
+                    'is_active': user.is_active
+                }
+            })
         except User.DoesNotExist:
             return Response({
                 'success': False,
                 'message': 'User not found'
             }, status=status.HTTP_404_NOT_FOUND)
-        
-
-class AdminUserListView(generics.ListAPIView):
-    """
-    Admin view to list all users.
-    """
-    serializer_class = UserProfileSerializer
-    permission_classes = [permissions.IsAdminUser]
-    
-    def get_queryset(self):
-        queryset = User.objects.all()
-        
-        # Search filter
-        search = self.request.query_params.get('search', '')
-        if search:
-            queryset = queryset.filter(
-                Q(email__icontains=search) |
-                Q(first_name__icontains=search) |
-                Q(last_name__icontains=search) |
-                Q(phone__icontains=search)
-            )
-        
-        # Role filter
-        role = self.request.query_params.get('role', '')
-        if role and role != 'all':
-            queryset = queryset.filter(user_type=role)
-        
-        # Status filter
-        status = self.request.query_params.get('status', '')
-        if status and status != 'all':
-            is_active = status == 'active'
-            queryset = queryset.filter(is_active=is_active)
-        
-        return queryset.order_by('-date_joined')
 
 
-class AdminUserUpdateView(generics.UpdateAPIView):
+class AdminUserDeleteView(APIView):
     """
-    Admin view to update user role and status.
+    Admin endpoint to delete user account.
+    DELETE /api/auth/admin/users/{user_id}/
     """
-    serializer_class = UserProfileSerializer
-    permission_classes = [permissions.IsAdminUser]
-    lookup_field = 'user_id'
-    lookup_url_kwarg = 'user_id'
     
-    def get_queryset(self):
-        return User.objects.all()
+    permission_classes = [IsAdminUser]
     
-    def update(self, request, *args, **kwargs):
-        user = self.get_object()
-        user_type = request.data.get('user_type')
-        is_active = request.data.get('is_active')
-        is_staff = request.data.get('is_staff')
-        is_superuser = request.data.get('is_superuser')
-        
-        if user_type:
-            user.user_type = user_type
-        if is_active is not None:
-            user.is_active = is_active
-        if is_staff is not None:
-            user.is_staff = is_staff
-        if is_superuser is not None:
-            user.is_superuser = is_superuser
-        
-        user.save()
-        
-        serializer = self.get_serializer(user)
-        return Response(serializer.data)
+    def delete(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)  # ✅ Fixed: Use 'id' field
+            
+            # Prevent deleting your own account
+            if user.id == request.user.id:
+                return Response({
+                    'success': False,
+                    'message': 'You cannot delete your own account'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            user.delete()
+            
+            return Response({
+                'success': True,
+                'message': 'User deleted successfully'
+            }, status=status.HTTP_200_OK)
+        except User.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'User not found'
+            }, status=status.HTTP_404_NOT_FOUND)

@@ -41,7 +41,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
     
     queryset = Category.objects.filter(is_active=True)
     serializer_class = CategorySerializer
-    permission_classes = [IsAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated]
     lookup_field = 'slug'
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'description']
@@ -93,7 +93,7 @@ class BrandViewSet(viewsets.ModelViewSet):
     
     queryset = Brand.objects.filter(is_active=True)
     serializer_class = BrandSerializer
-    permission_classes = [IsAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated]
     lookup_field = 'slug'
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'description']
@@ -134,6 +134,7 @@ class ProductViewSet(viewsets.ModelViewSet):
     
     queryset = Product.objects.all()
     lookup_field = 'slug'
+    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_class = ProductFilter
     search_fields = ['name', 'description', 'sku', 'brand__name', 'category__name']
@@ -144,7 +145,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         Return appropriate permissions based on action.
         """
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            # Allow superuser, admin, and seller
+            # Allow any authenticated user (superuser, admin, seller)
             return [permissions.IsAuthenticated()]
         else:
             # Anyone can view products
