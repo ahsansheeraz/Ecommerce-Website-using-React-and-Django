@@ -17,7 +17,7 @@ class CategorySerializer(serializers.ModelSerializer):
     Serializer for Category model with nested children support.
     """
     
-    product_count = serializers.IntegerField(read_only=True)
+    product_count = serializers.SerializerMethodField()
     full_path = serializers.CharField(read_only=True)
     children = serializers.SerializerMethodField()
     
@@ -31,6 +31,10 @@ class CategorySerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'slug', 'created_at', 'updated_at']
+    
+    def get_product_count(self, obj):
+        """Get count of active products in this category."""
+        return obj.products.filter(is_active=True).count()
     
     def get_children(self, obj):
         """
@@ -54,11 +58,14 @@ class CategoryListSerializer(serializers.ModelSerializer):
     Simplified category serializer for list views.
     """
     
-    product_count = serializers.IntegerField(read_only=True)
+    product_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Category
         fields = ['id', 'name', 'slug', 'product_count', 'image']
+    
+    def get_product_count(self, obj):
+        return obj.products.filter(is_active=True).count()
 
 
 class BrandSerializer(serializers.ModelSerializer):
@@ -66,7 +73,7 @@ class BrandSerializer(serializers.ModelSerializer):
     Serializer for Brand model.
     """
     
-    product_count = serializers.IntegerField(read_only=True)
+    product_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Brand
@@ -77,8 +84,13 @@ class BrandSerializer(serializers.ModelSerializer):
             'meta_title', 'meta_description', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'slug', 'created_at', 'updated_at']
+    
+    def get_product_count(self, obj):
+        """Get count of active products from this brand."""
+        return obj.products.filter(is_active=True).count()
 
 
+# ✅ Move ProductImageSerializer before ProductDetailSerializer
 class ProductImageSerializer(serializers.ModelSerializer):
     """
     Serializer for ProductImage model.
@@ -110,6 +122,7 @@ class ProductImageSerializer(serializers.ModelSerializer):
         return None
 
 
+# ✅ Move ProductVariantSerializer before ProductDetailSerializer
 class ProductVariantSerializer(serializers.ModelSerializer):
     """
     Serializer for ProductVariant model.
@@ -129,6 +142,7 @@ class ProductVariantSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
+# ✅ Move ProductReviewSerializer before ProductDetailSerializer
 class ProductReviewSerializer(serializers.ModelSerializer):
     """
     Serializer for ProductReview model with user details.
@@ -233,7 +247,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     
     def get_reviews(self, obj):
         """Get approved reviews for the product."""
-        reviews = obj.reviews.filter(is_approved=True)[:5]  # Limit to 5 most recent
+        reviews = obj.reviews.filter(is_approved=True)[:5]
         return ProductReviewSerializer(reviews, many=True, context=self.context).data
     
     def get_attributes(self, obj):

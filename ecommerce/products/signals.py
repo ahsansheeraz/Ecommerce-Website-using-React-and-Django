@@ -31,14 +31,14 @@ def create_thumbnail(sender, instance, created, **kwargs):
     if created and instance.image:
         try:
             # Open the image
-            image = Image.open(instance.image.path)
+            img = Image.open(instance.image.path)
             
             # Create thumbnail
-            image.thumbnail((300, 300))
+            img.thumbnail((300, 300))
             
             # Save thumbnail
             thumb_io = BytesIO()
-            image.save(thumb_io, format='JPEG' if image.format == 'JPEG' else 'PNG')
+            img.save(thumb_io, format='JPEG' if img.format == 'JPEG' else 'PNG', quality=85)
             
             # Generate thumbnail filename
             filename = os.path.basename(instance.image.name)
@@ -55,7 +55,9 @@ def create_thumbnail(sender, instance, created, **kwargs):
             
         except Exception as e:
             # Log error but don't prevent save
-            print(f"Error creating thumbnail: {e}")
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error creating thumbnail for {instance.image.name}: {e}")
 
 
 @receiver(post_save, sender=ProductReview)
@@ -74,18 +76,3 @@ def update_product_rating(sender, instance, **kwargs):
         # You can store avg_rating in a denormalized field if needed
         # product.avg_rating = avg_rating
         # product.save()
-
-
-# TODO: Add signal for low stock notification
-"""
-@receiver(post_save, sender=Product)
-def check_low_stock(sender, instance, **kwargs):
-    # Send notification when stock is low
-    if instance.track_inventory and instance.stock_quantity <= instance.low_stock_threshold:
-        # Send notification to seller/admin
-        create_notification(
-            user_type='seller',
-            title='Low Stock Alert',
-            message=f'{instance.name} is running low on stock. Current stock: {instance.stock_quantity}'
-        )
-"""

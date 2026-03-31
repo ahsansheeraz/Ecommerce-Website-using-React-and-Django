@@ -5,7 +5,7 @@ from . import views
 router = DefaultRouter()
 router.register(r'categories', views.CategoryViewSet, basename='category')
 router.register(r'brands', views.BrandViewSet, basename='brand')
-router.register(r'products', views.ProductViewSet, basename='product')  # ✅ This is correct
+router.register(r'products', views.ProductViewSet, basename='product')
 router.register(r'images', views.ProductImageViewSet, basename='product-image')
 router.register(r'reviews', views.ProductReviewViewSet, basename='review')
 router.register(r'tags', views.ProductTagViewSet, basename='tag')
